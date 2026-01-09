@@ -13,23 +13,36 @@ from app.config import (
     IMAGE_DIR,
     THUMBNAIL_DIR,
     BATCH_SIZE,
-    MILVUS_INSERT_BATCH
+    MILVUS_INSERT_BATCH,
+    SUPPORTED_IMAGE_FORMATS
 )
 
 
 def parse_filename(filename: str) -> Optional[dict]:
     """
     解析文件名
-    USD1107373-20251230-D00001.TIF -> {'patent_id': 'USD1107373', 'date': '20251230', 'page_num': 'D00001'}
+    支持两种格式：
+    1. USD1107373-20251230-D00001.TIF -> {'patent_id': 'USD1107373', 'date': '20251230', 'page_num': 'D00001'}
+    2. 其他格式 -> {'patent_id': 文件名(不含扩展名), 'date': '', 'page_num': '001'}
     """
-    # 支持带 _1 后缀的文件名
-    match = re.match(r"(USD\d+)-(\d+)-(D\d+)(?:_\d+)?\.TIF", filename, re.IGNORECASE)
+    # 尝试解析专利格式
+    match = re.match(r"(USD\d+)-(\d+)-(D\d+)(?:_\d+)?\.\w+", filename, re.IGNORECASE)
     if match:
         return {
             "patent_id": match.group(1),
             "date": match.group(2),
             "page_num": match.group(3),
         }
+
+    # 通用格式：用文件名作为 patent_id
+    name, ext = os.path.splitext(filename)
+    if ext.lower() in SUPPORTED_IMAGE_FORMATS:
+        return {
+            "patent_id": name,
+            "date": "",
+            "page_num": "001",
+        }
+
     return None
 
 
@@ -117,9 +130,10 @@ class BatchImportBaseService:
         images = []
         try:
             for filename in os.listdir(IMAGE_DIR):
-                if filename.upper().endswith(".TIF"):
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in SUPPORTED_IMAGE_FORMATS:
                     images.append(os.path.join(IMAGE_DIR, filename))
-            print(f"[SCAN-BASE] Found {len(images)} TIF files")
+            print(f"[SCAN-BASE] Found {len(images)} image files")
         except Exception as e:
             print(f"[SCAN-BASE] Error scanning directory: {e}")
         return sorted(images)

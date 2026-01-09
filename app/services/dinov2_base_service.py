@@ -6,6 +6,7 @@ from typing import Optional
 import time
 
 from app.config import DINOV2_BASE_MODEL, EMBEDDING_DIM_BASE
+from app.services.image_preprocessor import preprocess_for_dinov2
 
 
 class DINOv2BaseExtractor:
@@ -63,6 +64,8 @@ class DINOv2BaseExtractor:
         start_time = time.time()
 
         image = self._load_image(image_path)
+        # Letterbox Padding 预处理，保持长宽比
+        image = preprocess_for_dinov2(image)
         inputs = self.processor(images=image, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
@@ -86,6 +89,8 @@ class DINOv2BaseExtractor:
         start_time = time.time()
 
         image = image.convert("RGB")
+        # Letterbox Padding 预处理，保持长宽比
+        image = preprocess_for_dinov2(image)
         inputs = self.processor(images=image, return_tensors="pt").to(self.device)
 
         with torch.no_grad():
@@ -113,6 +118,8 @@ class DINOv2BaseExtractor:
         for i, p in enumerate(image_paths):
             try:
                 img = self._load_image(p)
+                # Letterbox Padding 预处理，保持长宽比
+                img = preprocess_for_dinov2(img)
                 images.append(img)
             except Exception as e:
                 print(f"[DINOV2-BASE] Failed to load image {p}: {e}")

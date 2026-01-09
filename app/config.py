@@ -16,8 +16,11 @@ EMBEDDING_DIM_BASE = 768
 COLLECTION_NAME_BASE = "patent_images_base"
 
 # 图片目录
-IMAGE_DIR = os.getenv("IMAGE_DIR", "testImage")
+IMAGE_DIR = os.getenv("IMAGE_DIR", "testImage") # 睿观·ERiC_files
 THUMBNAIL_DIR = os.path.join(IMAGE_DIR, "thumbnails")
+
+# 支持的图片格式
+SUPPORTED_IMAGE_FORMATS = {".tif", ".tiff", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 # 批量处理配置
 BATCH_SIZE = 32
