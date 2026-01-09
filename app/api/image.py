@@ -5,9 +5,18 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from PIL import Image
 
-from app.config import IMAGE_DIR, THUMBNAIL_DIR
+from app.config import IMAGE_DIRS, THUMBNAIL_DIR
 
 router = APIRouter(prefix="/api/image", tags=["image"])
+
+
+def find_image(file_name: str) -> str | None:
+    """从多个目录查找图片"""
+    for image_dir in IMAGE_DIRS:
+        path = os.path.join(image_dir, file_name)
+        if os.path.exists(path):
+            return path
+    return None
 
 
 @router.get("/{file_name}")
@@ -20,9 +29,9 @@ async def get_thumbnail(file_name: str):
     if os.path.exists(thumbnail_path):
         return FileResponse(thumbnail_path, media_type="image/jpeg")
 
-    # 如果缩略图不存在，尝试实时生成
-    original_path = os.path.join(IMAGE_DIR, file_name)
-    if not os.path.exists(original_path):
+    # 如果缩略图不存在，尝试从多个目录查找原图
+    original_path = find_image(file_name)
+    if not original_path:
         raise HTTPException(status_code=404, detail="Image not found")
 
     # 实时转换
@@ -45,9 +54,9 @@ async def get_thumbnail(file_name: str):
 @router.get("/full/{file_name}")
 async def get_full_image(file_name: str):
     """获取原图（转换为 JPEG）"""
-    original_path = os.path.join(IMAGE_DIR, file_name)
+    original_path = find_image(file_name)
 
-    if not os.path.exists(original_path):
+    if not original_path:
         raise HTTPException(status_code=404, detail="Image not found")
 
     try:

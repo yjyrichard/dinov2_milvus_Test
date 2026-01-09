@@ -15,9 +15,12 @@ DINOV2_BASE_MODEL = "facebook/dinov2-base"
 EMBEDDING_DIM_BASE = 768
 COLLECTION_NAME_BASE = "patent_images_base"
 
-# 图片目录
-IMAGE_DIR = os.getenv("IMAGE_DIR", "testImage") # 睿观·ERiC_files
+# 图片目录 批量导入用介个目录
+IMAGE_DIR = os.getenv("IMAGE_DIR", "testImage")
 THUMBNAIL_DIR = os.path.join(IMAGE_DIR, "thumbnails")
+
+# 所有图片目录（用于图片服务查找）
+IMAGE_DIRS = ["testImage", "睿观"]
 
 # 支持的图片格式
 SUPPORTED_IMAGE_FORMATS = {".tif", ".tiff", ".jpg", ".jpeg", ".png", ".bmp", ".webp"}
