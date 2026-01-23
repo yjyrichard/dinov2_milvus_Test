@@ -15,9 +15,8 @@
 7. [Milvus 向量数据库详解](#7-milvus-向量数据库详解)
 8. [MinIO 对象存储详解](#8-minio-对象存储详解)
 9. [完整数据流程分析](#9-完整数据流程分析)
-10. [外观专利数据切分与导入策略](#10-外观专利数据切分与导入策略)
-11. [设计模式与最佳实践](#11-设计模式与最佳实践)
-12. [生产环境注意事项](#12-生产环境注意事项)
+10. [设计模式与最佳实践](#10-设计模式与最佳实践)
+11. [生产环境注意事项](#11-生产环境注意事项)
 
 ---
 
@@ -1234,329 +1233,9 @@ GET /api/image/{file_name}  (获取缩略图)
 
 ---
 
-## 10. 外观专利数据切分与导入策略
+## 10. 设计模式与最佳实践
 
-### 10.1 USPTO 外观专利数据结构
-
-你当前处理的是 USPTO（美国专利商标局）的外观专利数据，其目录结构如下：
-
-```
-data/
-├── USD1107373/                    # 每个专利一个目录
-│   ├── USD1107373-20251230.XML    # 元数据文件（XML格式）
-│   ├── USD1107373-20251230-D00000.TIF  # 封面图
-│   ├── USD1107373-20251230-D00001.TIF  # 图片1
-│   ├── USD1107373-20251230-D00002.TIF  # 图片2
-│   └── ...                        # 可能有多张图片
-│
-├── USD1107374/
-│   ├── USD1107374-20251230.XML
-│   └── ...
-│
-└── ...
-```
-
-**关键点**：
-- **一个专利 = 一个目录 = 一个 XML + 多张图片**
-- 图片数量不固定，少则 1-2 张，多则 10+ 张
-- XML 包含专利的所有元数据
-
-### 10.2 XML 元数据解析
-
-`scripts/design_patent_parser.py` 负责解析 XML，提取以下信息：
-
-```python
-@dataclass
-class DesignPatent:
-    """外观专利数据结构"""
-
-    # 核心标识
-    patent_id: str       # 专利号，如 "D1107392"
-    kind: str            # 文献类型，通常是 "S1"
-
-    # 描述信息
-    title: str           # 设计名称，如 "Watch band"
-    loc_class: str       # LOC分类号，如 "10-02"（计时仪器类）
-    claim_text: str      # 权利要求文本
-
-    # 日期信息
-    pub_date: int        # 公开日期 YYYYMMDD
-    filing_date: int     # 申请日期 YYYYMMDD
-    grant_term: int      # 授权期限（年），通常15年
-
-    # 当事人
-    applicant_name: str      # 申请人（公司或个人）
-    applicant_country: str   # 申请人国家
-    inventor_names: str      # 发明人列表（逗号分隔）
-    assignee_name: str       # 受让人（通常是公司）
-
-    # 图片信息
-    images: list[str]    # 图片文件名列表
-    image_count: int     # 图片数量
-```
-
-**XML 解析核心代码**：
-
-```python
-def parse_design_patent_xml(xml_path: str) -> DesignPatent:
-    """解析 USPTO 外观专利 XML"""
-
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
-
-    # 根元素必须是 us-patent-grant
-    if root.tag != 'us-patent-grant':
-        return None
-
-    # 获取书目数据节点
-    biblio = root.find('us-bibliographic-data-grant')
-
-    # 解析专利号
-    pub_ref = biblio.find('publication-reference/document-id')
-    patent_id = pub_ref.find('doc-number').text  # 如 "D1107392"
-
-    # 解析标题
-    title = biblio.find('invention-title').text
-
-    # 解析 LOC 分类（洛迦诺分类）
-    loc = biblio.find('classification-locarno')
-    loc_class = loc.find('main-classification').text  # 如 "10-02"
-
-    # 解析图片列表
-    images = []
-    for img in root.findall('.//drawings/figure/img'):
-        file_name = img.get('file')  # 如 "USD1107392-20251230-D00001.TIF"
-        images.append(file_name)
-
-    # ...更多字段解析
-```
-
-### 10.3 数据切分策略
-
-**核心问题**：一个专利有多张图片，如何存入 Milvus？
-
-**当前策略：每张图片一条记录**
-
-```
-专利 USD1107373（3张图片）
-    │
-    ├─→ 记录1: D00001.TIF → 向量1 + 元数据
-    ├─→ 记录2: D00002.TIF → 向量2 + 元数据
-    └─→ 记录3: D00003.TIF → 向量3 + 元数据
-
-# Milvus 中：
-| id | patent_id   | image_index | file_name           | embedding      | title      | ... |
-|----|-------------|-------------|---------------------|----------------|------------|-----|
-| 1  | USD1107373  | 0           | D00001.TIF          | [0.1, 0.2,...] | Watch band | ... |
-| 2  | USD1107373  | 1           | D00002.TIF          | [0.3, 0.1,...] | Watch band | ... |
-| 3  | USD1107373  | 2           | D00003.TIF          | [0.2, 0.4,...] | Watch band | ... |
-```
-
-**为什么这样设计？**
-
-| 方案 | 优点 | 缺点 |
-|------|------|------|
-| 每张图片一条记录 | 可以匹配到具体哪张图最相似 | 同一专利可能返回多次 |
-| 每个专利一条记录（多向量平均） | 结果简洁 | 丢失细节，无法知道哪张图匹配 |
-| 每个专利一条记录（选代表图） | 结果简洁 | 可能选错，漏掉相似图 |
-
-**当前方案的优势**：
-- 搜索精度高，能找到最相似的具体图片
-- 后处理时可以按 `patent_id` 归组（`group_by_patent` 函数）
-
-### 10.4 完整导入流程
-
-`scripts/import_design_patents_full.py` 的工作流程：
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                  外观专利导入流程                                     │
-└─────────────────────────────────────────────────────────────────────┘
-
-1. 扫描数据目录
-   │  scan_design_patents("data/")
-   │  查找所有 USD* 子目录
-   │
-   ▼
-2. 解析 XML 元数据
-   │  for patent_dir in data_path.glob('USD*'):
-   │      xml_path = patent_dir.glob('*.XML')[0]
-   │      patent = parse_design_patent_xml(xml_path)
-   │
-   │  得到 DesignPatent 对象列表
-   │
-   ▼
-3. 遍历每个专利的每张图片
-   │
-   │  for patent in patents:
-   │      for img_idx, img_file in enumerate(patent.images):
-   │          │
-   │          ├─→ 3.1 上传图片到 MinIO
-   │          │       object_name = f"design_patents/{patent_id}/{img_file}"
-   │          │       minio_url = minio_service.upload_file(local_path, object_name)
-   │          │
-   │          ├─→ 3.2 DINOv2 向量化
-   │          │       embedding = dinov2_base_extractor.extract_single(local_path)
-   │          │
-   │          └─→ 3.3 准备 Milvus 数据
-   │                  {
-   │                      "patent_id": patent.patent_id,
-   │                      "image_index": img_idx,        # 图片序号
-   │                      "file_name": img_file,
-   │                      "file_path": minio_url,
-   │                      "embedding": embedding,        # 768维向量
-   │                      "title": patent.title,
-   │                      "loc_class": patent.loc_class,
-   │                      "applicant_name": patent.applicant_name,
-   │                      # ...其他元数据
-   │                  }
-   │
-   ▼
-4. 批量插入 Milvus
-   │  每 32 条记录插入一次
-   │  collection.insert(entities)
-   │
-   ▼
-5. 完成统计
-   │  成功: X 张图片
-   │  失败: Y 张图片
-   │  Collection 总记录: Z
-```
-
-### 10.5 Collection Schema（外观专利完整版）
-
-```python
-# design_patents_full Collection 的字段定义
-
-fields = [
-    # 主键
-    FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
-
-    # 核心字段（搜索必需）
-    FieldSchema(name="patent_id", dtype=DataType.VARCHAR, max_length=64),
-    FieldSchema(name="image_index", dtype=DataType.INT16),      # 图片序号
-    FieldSchema(name="file_name", dtype=DataType.VARCHAR, max_length=256),
-    FieldSchema(name="file_path", dtype=DataType.VARCHAR, max_length=512),  # MinIO URL
-    FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=768),    # Base模型
-
-    # 元数据字段（用于展示和过滤）
-    FieldSchema(name="title", dtype=DataType.VARCHAR, max_length=500),
-    FieldSchema(name="loc_class", dtype=DataType.VARCHAR, max_length=20),
-    FieldSchema(name="loc_edition", dtype=DataType.VARCHAR, max_length=10),
-    FieldSchema(name="pub_date", dtype=DataType.INT64),         # 公开日期
-    FieldSchema(name="filing_date", dtype=DataType.INT64),      # 申请日期
-    FieldSchema(name="grant_term", dtype=DataType.INT16),       # 授权期限
-    FieldSchema(name="applicant_name", dtype=DataType.VARCHAR, max_length=256),
-    FieldSchema(name="applicant_country", dtype=DataType.VARCHAR, max_length=10),
-    FieldSchema(name="inventor_names", dtype=DataType.VARCHAR, max_length=500),
-    FieldSchema(name="assignee_name", dtype=DataType.VARCHAR, max_length=256),
-    FieldSchema(name="claim_text", dtype=DataType.VARCHAR, max_length=500),
-    FieldSchema(name="image_count", dtype=DataType.INT16),      # 该专利图片总数
-    FieldSchema(name="created_at", dtype=DataType.INT64),
-]
-```
-
-### 10.6 数据量建议与扩展策略
-
-#### 当前数据量评估
-
-| 指标 | 典型值 | 说明 |
-|------|--------|------|
-| 每个专利的图片数 | 3-10 张 | 平均约 5 张 |
-| 每张图片的向量大小 | 768 × 4 bytes = 3KB | Base 模型 |
-| 每条记录的元数据 | ~1KB | VARCHAR 字段 |
-| 每条记录总大小 | ~4KB | 向量 + 元数据 |
-
-#### 扩展建议
-
-**1. 数据量对索引的影响**
-
-| 数据量 | 索引配置 | 搜索时间 |
-|--------|----------|----------|
-| < 10 万 | nlist=128, nprobe=16 | <10ms |
-| 10-100 万 | nlist=256, nprobe=32 | 10-50ms |
-| 100-1000 万 | nlist=1024, nprobe=64 | 50-100ms |
-| > 1000 万 | 考虑 HNSW 索引或分片 | - |
-
-**2. 是否应该灌更多数据？**
-
-```
-建议：是的，数据越多效果越好！
-
-原因：
-1. 向量检索是"找最相似的"，数据越多，越可能找到真正相似的
-2. IVF 索引在数据量大时效果更好（聚类更准确）
-3. 对于专利检索，覆盖面广很重要
-
-但要注意：
-1. 确保 Milvus 服务器有足够内存（约 4GB/百万条记录）
-2. 导入时间会增加（约 1-2 秒/张图片，GPU）
-3. 可以分批导入，支持断点续传
-```
-
-**3. 如何获取更多 USPTO 数据**
-
-USPTO 提供免费的批量下载：
-- 官网：https://bulkdata.uspto.gov/
-- 外观专利：`Patent Grant Full Text Data (Design Patents)`
-- 格式：XML + 图片打包
-
-**4. 扩展到其他类型数据**
-
-当前系统架构支持多种数据源：
-
-```python
-# 可以创建不同的 Collection 存储不同数据
-
-COLLECTIONS = {
-    "design_patents_full": "USPTO 外观专利",
-    "patent_images_base": "普通专利图片",
-    "ruiguan_images": "睿观产品图片",
-    "product_catalog": "产品目录图片",
-}
-
-# 搜索时可以指定在哪个 Collection 中搜索
-# 或者同时搜索多个 Collection 并合并结果
-```
-
-### 10.7 运行导入脚本
-
-```bash
-# 1. 确保 Milvus 和 MinIO 服务已启动
-
-# 2. 准备数据目录
-# 将 USPTO 数据解压到项目根目录，形成 USD*/XXX.XML 结构
-
-# 3. 运行导入脚本
-cd scripts
-python import_design_patents_full.py
-
-# 输出示例：
-# ============================================================
-# 外观专利完整导入 (MinIO + Milvus)
-# ============================================================
-# [DATA] 数据目录: D:\dev\develop\dinov2_milvus_Test
-# [MILVUS] Connecting to 192.168.1.174:31278...
-# [MILVUS] Connected
-# [SCAN] 扫描外观专利...
-# [SCAN] 共 150 个专利
-# [IMPORT] 开始导入: 150 专利, 723 图片
-# [1/150] D1107373: Watch band...
-#   进度: 0.7% | 成功: 3 | 失败: 0
-# ...
-# ============================================================
-# 导入完成!
-# 成功: 720
-# 失败: 3
-# Collection 总记录: 720
-# ============================================================
-```
-
----
-
-## 11. 设计模式与最佳实践
-
-### 11.1 单例模式 (Singleton)
+### 10.1 单例模式 (Singleton)
 
 ```python
 class MilvusService:
@@ -1582,7 +1261,7 @@ print(service1 is service2)  # True，同一个实例
 - DINOv2 模型占用大量 GPU 内存
 - 避免重复创建浪费资源
 
-### 11.2 延迟初始化 (Lazy Initialization)
+### 10.2 延迟初始化 (Lazy Initialization)
 
 ```python
 class DINOv2Extractor:
@@ -1609,7 +1288,7 @@ class DINOv2Extractor:
 - 内存按需使用
 - 某些服务可能根本不用到
 
-### 11.3 分层架构
+### 10.3 分层架构
 
 ```
 ┌─────────────────┐
@@ -1626,7 +1305,7 @@ class DINOv2Extractor:
 - 易于测试
 - 可以独立修改某一层
 
-### 11.4 后台线程初始化
+### 10.4 后台线程初始化
 
 ```python
 @asynccontextmanager
@@ -1645,9 +1324,9 @@ async def lifespan(app: FastAPI):
 
 ---
 
-## 12. 生产环境注意事项
+## 11. 生产环境注意事项
 
-### 12.1 安全配置
+### 11.1 安全配置
 
 ```python
 # 当前配置（开发环境）
@@ -1666,7 +1345,7 @@ app.add_middleware(
 )
 ```
 
-### 12.2 配置外部化
+### 11.2 配置外部化
 
 ```python
 # 当前配置（硬编码）
@@ -1678,7 +1357,7 @@ MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 # 或使用 .env 文件 + python-dotenv
 ```
 
-### 12.3 错误处理
+### 11.3 错误处理
 
 ```python
 # 当前方式
@@ -1702,7 +1381,7 @@ async def global_exception_handler(request, exc):
     )
 ```
 
-### 12.4 日志配置
+### 11.4 日志配置
 
 ```python
 # 当前方式
@@ -1724,7 +1403,7 @@ logger = logging.getLogger(__name__)
 logger.info("Milvus connected")
 ```
 
-### 12.5 性能优化建议
+### 11.5 性能优化建议
 
 | 问题 | 当前状态 | 优化建议 |
 |------|----------|----------|
@@ -1734,7 +1413,7 @@ logger.info("Milvus connected")
 | 数据库连接 | 单连接 | 连接池 |
 | API 响应 | 同步 | 异步 + 缓存 |
 
-### 12.6 监控与健康检查
+### 11.6 监控与健康检查
 
 ```python
 # 当前健康检查
@@ -1814,4 +1493,6 @@ async def health():
 ---
 
 *文档生成时间：2026-01-13*
-*如有问题，请联系开发团队*
+*如有问题，请联系me : 杨佳宇*
+
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload

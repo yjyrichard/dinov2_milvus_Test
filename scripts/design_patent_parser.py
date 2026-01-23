@@ -5,7 +5,7 @@
 """
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Iterator
 from datetime import datetime
 from dataclasses import dataclass, field, asdict
 
@@ -285,25 +285,120 @@ def scan_design_patents(data_dir: str) -> list[DesignPatent]:
     return patents
 
 
+def scan_design_patents_nested(design_dir: str) -> Iterator[DesignPatent]:
+    """
+    扫描嵌套目录结构的外观专利 (生成器模式，节省内存)
+
+    目录结构: DESIGN/USD*-日期/USD*-日期/*.XML
+
+    Args:
+        design_dir: DESIGN 目录路径
+
+    Yields:
+        DesignPatent 对象
+    """
+    design_path = Path(design_dir)
+
+    # 查找所有 USD* 目录
+    for patent_dir in design_path.glob('USD*'):
+        if not patent_dir.is_dir():
+            continue
+
+        # 嵌套结构: USD*/USD*/*.XML
+        xml_files = list(patent_dir.glob('*/*.XML'))
+        if not xml_files:
+            # 也尝试直接在当前目录找
+            xml_files = list(patent_dir.glob('*.XML'))
+
+        if not xml_files:
+            continue
+
+        xml_path = xml_files[0]
+        patent = parse_design_patent_xml(str(xml_path))
+
+        if patent:
+            yield patent
+        else:
+            print(f"[SCAN] 解析失败: {xml_path}")
+
+
+def scan_all_design_patents(root_dir: str, verbose: bool = True) -> Iterator[DesignPatent]:
+    """
+    扫描根目录下所有日期目录中的 DESIGN 子目录 (生成器模式，节省内存)
+
+    目录结构: D:\\data\\I日期\\I日期\\DESIGN\\USD*\\USD*\\*.XML
+
+    Args:
+        root_dir: 根目录路径 (如 D:\\data)
+        verbose: 是否输出详细信息
+
+    Yields:
+        DesignPatent 对象，逐个返回避免内存压力
+    """
+    root_path = Path(root_dir)
+
+    # 查找所有 DESIGN 目录: I*/I*/DESIGN
+    design_dirs = list(root_path.glob('I*/I*/DESIGN'))
+
+    if verbose:
+        print(f"[SCAN] 找到 {len(design_dirs)} 个 DESIGN 目录")
+
+    patent_count = 0
+    for idx, design_dir in enumerate(design_dirs):
+        if verbose:
+            print(f"\n[{idx + 1}/{len(design_dirs)}] 扫描: {design_dir}")
+
+        dir_count = 0
+        for patent in scan_design_patents_nested(str(design_dir)):
+            yield patent
+            patent_count += 1
+            dir_count += 1
+
+        if verbose:
+            print(f"  找到 {dir_count} 个专利")
+
+    if verbose:
+        print(f"\n[SCAN] 总计: {patent_count} 个外观专利")
+
+
 # 测试代码
 if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1:
-        # 测试单个文件
-        xml_path = sys.argv[1]
-        patent = parse_design_patent_xml(xml_path)
-        if patent:
-            print("\n=== 解析结果 ===")
-            for key, value in patent.to_dict().items():
-                if key != 'images':
-                    print(f"{key}: {value}")
-            print(f"images: {patent.images[:3]}..." if len(patent.images) > 3 else f"images: {patent.images}")
-    else:
-        # 扫描测试
-        data_dir = Path(__file__).parent.parent
-        patents = scan_design_patents(str(data_dir))
+        arg = sys.argv[1]
 
-        print(f"\n=== 扫描结果 ===")
-        for patent in patents[:5]:
-            print(f"{patent.patent_id}: {patent.title[:40]} (LOC: {patent.loc_class}, 图片: {patent.image_count})")
+        if arg == "--scan-all":
+            # 扫描 D:\data 下所有 DESIGN 目录
+            root_dir = sys.argv[2] if len(sys.argv) > 2 else r"D:\data"
+            print(f"扫描目录: {root_dir}")
+            patents = scan_all_design_patents(root_dir)
+
+            print(f"\n=== 扫描结果 (前10个) ===")
+            for patent in patents[:10]:
+                print(f"{patent.patent_id}: {patent.title[:40]} (LOC: {patent.loc_class}, 图片: {patent.image_count})")
+
+            # 统计图片总数
+            total_images = sum(p.image_count for p in patents)
+            print(f"\n总计: {len(patents)} 个专利, {total_images} 张图片")
+
+        elif arg.endswith('.XML') or arg.endswith('.xml'):
+            # 测试单个文件
+            patent = parse_design_patent_xml(arg)
+            if patent:
+                print("\n=== 解析结果 ===")
+                for key, value in patent.to_dict().items():
+                    if key != 'images':
+                        print(f"{key}: {value}")
+                print(f"images: {patent.images[:3]}..." if len(patent.images) > 3 else f"images: {patent.images}")
+        else:
+            # 扫描指定目录
+            patents = scan_design_patents(arg)
+            print(f"\n=== 扫描结果 ===")
+            for patent in patents[:5]:
+                print(f"{patent.patent_id}: {patent.title[:40]} (LOC: {patent.loc_class}, 图片: {patent.image_count})")
+    else:
+        print("用法:")
+        print("  python design_patent_parser.py <xml_file>       - 解析单个XML")
+        print("  python design_patent_parser.py <data_dir>       - 扫描目录")
+        print("  python design_patent_parser.py --scan-all [dir] - 扫描所有DESIGN目录 (默认 D:\\data)")

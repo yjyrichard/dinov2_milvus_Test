@@ -10,8 +10,8 @@ COLLECTION_NAME = "patent_images"
 DINOV2_MODEL = "facebook/dinov2-small"
 EMBEDDING_DIM = 384
 
-# DINOv2 配置 (Base 模型)
-DINOV2_BASE_MODEL = "facebook/dinov2-base"
+# DINOv2 配置 (Base 模型) - 使用本地模型
+DINOV2_BASE_MODEL = "./dinov2-base"
 EMBEDDING_DIM_BASE = 768
 COLLECTION_NAME_BASE = "patent_images_base"
 
